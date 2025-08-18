@@ -1,7 +1,7 @@
 [plugininfo]
 displayName = "Project RAX"
-version = "0.3"
+version = "0.4"
 author = "EveGlowLuna, Shasnow"
 description = "添加更多功能"
-SRAversion = "0.8.3"
-loadPeriod = "late"
+SRAversion = "0.8.4"
+loadPeriod = "normal"

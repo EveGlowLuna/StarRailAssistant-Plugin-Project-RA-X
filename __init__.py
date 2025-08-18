@@ -3,8 +3,8 @@
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import QTextEdit, QVBoxLayout, QWidget
 
-from SRACore.utils import Logger
-from SRACore.utils.Plugins import *
+from SRACore.utils import WindowsProcess
+from SRACore.utils.Logger import log_emitter
 from SRACore.utils.SRAOperator import SRAOperator
 
 import ctypes
@@ -18,7 +18,8 @@ class TransparentLogWindow(QWidget):
         self.setWindowTitle("透明日志")
         self.setGeometry(100, 100, 500, 200)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)  # 设置窗口背景透明
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)  # 无边框窗口，保持最前显示，隐藏任务栏图标
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)  # 无边框窗口，保持最前显示，隐藏任务栏图标
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)  # 设置鼠标事件穿透
         # self.move(QApplication.primaryScreen().geometry().bottomLeft() - self.rect().bottomLeft() + QPoint(0, -300))  # 定位窗口到屏幕底部任务栏上方
         # 设置窗口无边框样式
@@ -55,7 +56,7 @@ class TransparentLogWindow(QWidget):
     def update_log(self, msg):
         """
         更新日志显示内容
-        
+
         参数:
             msg: 日志消息对象，包含level和message等信息
         """
@@ -66,11 +67,9 @@ class TransparentLogWindow(QWidget):
             "SUCCESS": "green",
             # "DEBUG": "lightblue" 测试可用
         }
-        level = msg.split("|")[1].strip()
+        _, time, level, *message = msg.split(" ")
         if level.upper() not in ["INFO", "WARNING", "ERROR", "SUCCESS"]:
             return
-        message = msg.split("|")[-1]
-        time = msg.split("|")[0].split(" ")[1]
 
         color = color_map.get(level.upper(), "white")
         # 构建带有阴影效果和颜色的HTML格式日志文本
@@ -78,50 +77,40 @@ class TransparentLogWindow(QWidget):
         html_text = (
             f'<div style="font-size:14px; font-weight:bold; font-family:\'{font_family}\'; '
             f'padding: 2px 6px;">'
-            f'<span style="color:#D8BFD8">{time}</span> <span style="color:{color}">[{level}] </span> <span style="color:#7B68EE"> {message}</span>'
+            f'<span style="color:#D8BFD8">{time}</span> <span style="color:{color}">[{level}] </span> <span style="color:#7B68EE"> {"".join(message)}</span>'
             f'</div>'
         )
         self.log_view.append(html_text)
         self.scroll_to_bottom()
 
     def update_location(self):
-        top=SRAOperator.area_top/SRAOperator.zoom
-        left=SRAOperator.area_left/SRAOperator.zoom
-        self.setGeometry(int(left),int(top+450),500,200)
+        self.setVisible(WindowsProcess.is_window_active("崩坏：星穹铁道"))  # 检查游戏窗口是否激活
+        top = SRAOperator.area_top / SRAOperator.zoom
+        left = SRAOperator.area_left / SRAOperator.zoom
+        self.setGeometry(int(left), int(top + 450), 500, 200)
 
     def closeEvent(self, event):
         """
         窗口关闭事件处理
-        
+
         参数:
             event: 关闭事件对象
         """
         print("窗口关闭，退出程序")
         event.accept()  # 接受关闭事件
 
-class MainEntrance(PluginBase):
-    """插件主入口类"""
-
-    def __init__(self):
-        """初始化插件"""
-        super().__init__(self.__class__.__name__)
-        self.window = None  # 日志窗口实例
-
-    def show_window(self):
-        """显示日志窗口"""
-        self.window = TransparentLogWindow()
-        self.window.show()
-        Logger.logger.info("插件启动成功。")  # 记录启动日志
 
 if __name__ != "__main__":
     """作为插件运行时注册插件"""
     log_window = TransparentLogWindow()
     log_window.show()
-    PluginManager.public_instance.logChanged.connect(log_window.update_log)
+    log_emitter.log_signal.connect(log_window.update_log)
+
 
 def run():
     """空运行函数，保留接口"""
     pass
+
 
 if __name__ == "__main__":
     """直接运行时的提示信息"""
