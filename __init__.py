@@ -73,7 +73,8 @@ class TransparentLogWindow(QWidget):
         self.setWindowTitle("日志窗口")
         self.setGeometry(100, 100, 500, 200)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)  # 设置窗口背景透明
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)  # 无边框窗口，保持最前显示，隐藏任务栏图标
+        self.setWindowFlags(
+            Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.Tool)  # 无边框窗口，保持最前显示，隐藏任务栏图标
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)  # 设置鼠标事件穿透
         # self.move(QApplication.primaryScreen().geometry().bottomLeft() - self.rect().bottomLeft() + QPoint(0, -300))  # 定位窗口到屏幕底部任务栏上方
         # 设置窗口无边框样式
@@ -110,7 +111,7 @@ class TransparentLogWindow(QWidget):
     def update_log(self, msg):
         """
         更新日志显示内容
-        
+
         参数:
             msg: 日志消息对象，包含level和message等信息
         """
@@ -146,7 +147,7 @@ class TransparentLogWindow(QWidget):
     def closeEvent(self, event):
         """
         窗口关闭事件处理
-        
+
         参数:
             event: 关闭事件对象
         """
@@ -361,6 +362,7 @@ def run():
     global cfgw
     cfgw = ConfigWindow()
     cfgw.show()
+
 
 if __name__ == "__main__":
     """直接运行时的提示信息"""
