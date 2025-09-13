@@ -3,17 +3,15 @@
 #region 导入模块
 from PySide6.QtCore import QFile, Qt, QTimer
 from PySide6.QtWidgets import *
-from PySide6.QtUiTools import QUiLoader
 
 from . import settings
 
-from SRACore.utils import WindowsProcess
-from SRACore.utils import Logger
-from SRACore.utils.Logger import log_emitter
-from SRACore.utils.Plugins import *
-from SRACore.utils.SRAOperator import SRAOperator
-from SRACore.utils.SRAComponents import Main
-from SRACore.utils import Configure
+from SRACore.util import system as WindowsProcess
+from SRACore.util.logger import logger
+from SRACore.util.logger import log_emitter
+from SRACore.util.plugin import PluginBase
+from SRACore.util.operator import Operator
+from SRACore.util.config import ConfigManager as SRACoreConfigManager
 
 from ctypes import windll
 import json
@@ -26,10 +24,10 @@ import time
 
 
 #region 配置管理
-class ConfigManager:
+class PluginConfigManager:
     def __init__(self):
         super().__init__()
-        with open("plugins/ProjectRAX/config.json", "r") as f:
+        with open("plugins/StarRailAssistant-Plugin-Project-RA-X/config.json", "r") as f:
             self.config = json.load(f)
         self.showLog = self.config["showLog"]
         self.check_task = self.config["check_task"]
@@ -38,7 +36,7 @@ class ConfigManager:
             check_task_inside = True
         self.check_delay = self.config["check_delay"]
         self.lang = self.config["lang"]
-    
+
     def reload_config(self):
         self.showLog = self.config["showLog"]
         self.check_task = self.config["check_task"]
@@ -47,10 +45,10 @@ class ConfigManager:
             check_task_inside = True
         self.check_delay = self.config["check_delay"]
         self.lang = self.config["lang"]
-    
+
     def change_config(self, key, value):
         self.config[key] = value
-        json.dump(self.config, open("plugins/ProjectRAX/config.json", "w"))
+        json.dump(self.config, open("plugins/StarRailAssistant-Plugin-Project-RA-X/config.json", "w"))
 #endregion
 
 
@@ -59,7 +57,10 @@ check_task_inside = False
 daily_task_completed = False
 starting_check = False
 cfgw = None
-cfgm = ConfigManager()
+cfgm = PluginConfigManager()
+operator = Operator()
+task_checker_thread = None  # 任务检测线程实例
+log_listener_connected = False  # 日志监听器连接状态
 # runt = Main()
 # 逻辑：重构该类实现方式
 #endregion
@@ -139,10 +140,12 @@ class TransparentLogWindow(QWidget):
         self.scroll_to_bottom()
 
     def update_location(self):
-        self.setVisible(WindowsProcess.is_window_active("崩坏：星穹铁道"))  # 检查游戏窗口是否激活
-        top = SRAOperator.area_top / SRAOperator.zoom
-        left = SRAOperator.area_left / SRAOperator.zoom
-        self.setGeometry(int(left), int(top + 450), 500, 200)
+        self.setVisible(WindowsProcess.is_process_running("StarRail.exe"))  # 检查游戏窗口是否激活
+        region = operator.get_win_region()
+        if region:
+            top = region.top / operator.zoom
+            left = region.left / operator.zoom
+            self.setGeometry(int(left), int(top + 450), 500, 200)
 
     def closeEvent(self, event):
         """
@@ -153,7 +156,7 @@ class TransparentLogWindow(QWidget):
         """
         print("窗口关闭，退出程序")
         event.accept()  # 接受关闭事件
-#endregion
+
 
 
 #region 任务执行器
@@ -171,62 +174,93 @@ class TaskExecutor:
     def execute_task(self, config_name=None):
         """
         执行任务
-        
+
         Args:
             config_name: 配置方案名称，如果为None则使用当前配置
         """
         if self.is_executing:
-            Logger.logger.warning("任务正在执行中，请等待完成后再试")
+            logger.warning("任务正在执行中，请等待完成后再试")
             return False
-            
+
         if self.main_instance is None:
-            Logger.logger.error("未找到SRA主实例，无法执行任务")
+            logger.error("未找到SRA主实例，无法执行任务")
             return False
-            
-        if self.main_instance.isRunning:
-            Logger.logger.warning("SRA主程序正在运行任务，请等待完成后再试")
+
+        if self.main_instance.task_thread.isRunning():
+            logger.warning("SRA主程序正在运行任务，请等待完成后再试")
             return False
-        
+
         try:
             self.is_executing = True
-            Logger.logger.info("ProjectRAX: 开始执行任务")
-            
+            logger.info("ProjectRAX: 开始执行任务")
+
             if config_name:
-                # 使用指定配置执行
-                config = Configure.loadConfigByName(config_name)
-                self.main_instance.execute_with_config(config)
+                # 使用指定配置执行 - 设置全局配置管理器
+                from SRACore.util.config import GlobalConfigManager
+                gcm = GlobalConfigManager()
+                gcm.set('current_config', config_name)
+                logger.info(f"ProjectRAX: 切换到配置 {config_name}")
             else:
-                # 使用当前配置执行
-                self.main_instance.execute()
-            
+                # 确保使用当前配置
+                pass
+
+            # 启动任务线程
+            self.main_instance.task_thread.start()
+
             return True
-            
+
         except Exception as e:
-            Logger.logger.error(f"执行任务时发生错误: {e}")
+            logger.error(f"执行任务时发生错误: {e}")
             return False
         finally:
             self.is_executing = False
     
     def stop_task(self):
         """停止当前任务"""
-        if self.main_instance and self.main_instance.isRunning:
-            self.main_instance.kill()
-            Logger.logger.info("ProjectRAX: 已请求停止任务")
+        if self.main_instance and self.main_instance.task_thread.isRunning():
+            self.main_instance.task_thread.stop()
+            logger.info("ProjectRAX: 已请求停止任务")
             return True
         return False
     
     def get_available_configs(self):
         """获取可用的配置方案列表"""
         try:
-            globals_config = Configure.load("data/globals.json")
-            return globals_config["Config"]["configList"]
+            from SRACore.util.config import GlobalConfigManager
+            gcm = GlobalConfigManager()
+            return gcm.get('config_list', ['default'])
         except Exception as e:
-            Logger.logger.error(f"获取配置列表失败: {e}")
-            return []
+            logger.error(f"获取配置列表失败: {e}")
+            return ['default']
 
 # 全局任务执行器实例
 task_executor = TaskExecutor()
+
+
+#region 日志监听器
+def log_message_listener(msg):
+    """
+    监听日志消息，检测任务完成状态
+
+    Args:
+        msg: 日志消息字符串
+    """
+    global daily_task_completed, starting_check
+
+    if "任务全部完成" in msg:
+        logger.info("ProjectRAX: 检测到任务全部完成信号")
+        daily_task_completed = True
+        starting_check = True  # 开始检测周期
+
+def connect_log_listener():
+    """连接日志监听器"""
+    global log_listener_connected
+    if not log_listener_connected:
+        log_emitter.log_signal.connect(log_message_listener)
+        log_listener_connected = True
+        logger.info("ProjectRAX: 日志监听器已连接")
 #endregion
+
 
 
 #region 检测任务
@@ -236,23 +270,38 @@ class TaskCheckerThread(threading.Thread):
         cfgm.reload_config()
         self.delay = cfgm.check_delay
         self.check_task = cfgm.check_task
-    
+        self.running = True
+
+    def stop(self):
+        """停止检测线程"""
+        self.running = False
+
     def run(self):
-        while self.check_task:
+        global daily_task_completed, starting_check
+
+        logger.info("ProjectRAX: 任务检测线程已启动")
+
+        while self.running and self.check_task:
             cfgm.reload_config()
-            if not starting_check:
-                time.sleep(cfgm.check_delay * 60)
-                continue
+            if not self.check_task:
+                break
+
+            # 检查是否需要执行每日任务
             if not daily_task_completed:
-                # 使用任务执行器执行任务
+                logger.info("ProjectRAX: 检测到每日任务未完成，开始执行")
                 if task_executor.execute_task():
-                    Logger.logger.info("ProjectRAX: 自动任务执行完成")
-                    daily_task_completed = True
+                    logger.info("ProjectRAX: 任务执行已开始，等待完成信号")
+                    # 设置starting_check为True，等待任务完成信号
+                    starting_check = True
                 else:
-                    Logger.logger.error("ProjectRAX: 自动任务执行失败")
+                    logger.error("ProjectRAX: 任务执行失败，将在下个周期重试")
+            else:
+                logger.debug("ProjectRAX: 每日任务已完成")
+
+            # 等待指定时间后再次检查
             time.sleep(cfgm.check_delay * 60)
 
-#endregion
+
 
 
 #region 设置窗口
@@ -288,9 +337,9 @@ class ConfigWindow(QMainWindow):
         """手动执行任务"""
         selected_config = self.config_combo.currentData()
         if task_executor.execute_task(selected_config):
-            Logger.logger.info("ProjectRAX: 手动任务执行已开始")
+            logger.info("ProjectRAX: 手动任务执行已开始")
         else:
-            Logger.logger.error("ProjectRAX: 手动任务执行失败")
+            logger.error("ProjectRAX: 手动任务执行失败")
 
     def changecfg_static(self):
         showLog = self.ui.checkbox_display.isChecked()
@@ -300,25 +349,51 @@ class ConfigWindow(QMainWindow):
         cfgm.change_config("check_delay", check_delay)
     
     def enable_taskcheck(self):
-        global check_task_inside
+        global check_task_inside, task_checker_thread, daily_task_completed
+
         if not check_task_inside:
             check_task_inside = True
+            cfgm.change_config("check_task", True)
+            # 重置每日任务状态，准备重新检测
+            daily_task_completed = False
+            # 连接日志监听器
+            connect_log_listener()
+            # 启动任务检测线程
+            if task_checker_thread is None or not task_checker_thread.is_alive():
+                task_checker_thread = TaskCheckerThread()
+                task_checker_thread.daemon = True
+                task_checker_thread.start()
+            logger.info("ProjectRAX: 任务检测已启用")
         else:
-            Logger.logger.error("任务检测已开启，关闭程序后自动关闭。")
+            logger.warning("ProjectRAX: 任务检测已开启")
     
     def enable_processprotect(self):
-        global check_task_inside
+        global check_task_inside, task_checker_thread
         cfgm.reload_config()
         for proc in psutil.process_iter(["name"]):
             try:
                 if proc.info["name"] == "ProcessProtector.exe":
-                    Logger.logger.error("已经启用了进程守护，不能再次启动！")
+                    logger.error("ProjectRAX: 已经启用了进程守护，不能再次启动！")
+                    return
             except (psutil.NoSuchProcess, psutil.ZombieProcess):
-                subprocess.Popen([os.path.join(os.getcwd(),"plugins","ProjectRAX","ProcessProtector.exe")])
-                if check_task_inside:
-                    cfgm.change_config("check_task",True)
-                os._exit(0)
-#endregion
+                pass
+
+        # 启动进程保护器
+        subprocess.Popen([os.path.join(os.getcwd(),"plugins","StarRailAssistant-Plugin-Project-RA-X","process_protector","protector.exe")])
+
+        # 如果任务检测未启用，启用并启动
+        if not check_task_inside:
+            check_task_inside = True
+            cfgm.change_config("check_task", True)
+            connect_log_listener()
+            if task_checker_thread is None or not task_checker_thread.is_alive():
+                task_checker_thread = TaskCheckerThread()
+                task_checker_thread.daemon = True
+                task_checker_thread.start()
+
+        logger.info("ProjectRAX: 进程保护已启用")
+        os._exit(0)
+
 
 
 #region 插件主入口
@@ -334,8 +409,8 @@ class MainEntrance(PluginBase):
         """显示日志窗口"""
         self.window = TransparentLogWindow()
         self.window.show()
-        Logger.logger.info("插件启动成功。")  # 记录启动日志
-#endregion
+        logger.info("插件启动成功。")  # 记录启动日志
+
 
 
 #region 入口
@@ -347,16 +422,27 @@ def set_main_instance(main_instance):
     global main_instance_ref
     main_instance_ref = main_instance
     task_executor.set_main_instance(main_instance)
-    Logger.logger.info("ProjectRAX: 已获取SRA主实例引用")
+    logger.info("ProjectRAX: 已获取SRA主实例引用")
 
 if __name__ != "__main__":
     """作为插件运行时注册插件"""
-    cfg = ConfigManager()
+    cfg = PluginConfigManager()
     cfg.reload_config()
     if cfg.showLog:
         log_window = TransparentLogWindow()
         log_window.show()
         log_emitter.log_signal.connect(log_window.update_log)
+
+    # 如果启用了任务检测，启动相关组件
+    if cfg.check_task:
+        connect_log_listener()
+        if task_checker_thread is None or not task_checker_thread.is_alive():
+            task_checker_thread = TaskCheckerThread()
+            task_checker_thread.daemon = True
+            task_checker_thread.start()
+        logger.info("ProjectRAX: 任务检测已自动启用")
+
+    logger.info("插件启动成功。")  # 记录启动日志
 
 def run():
     global cfgw
@@ -367,4 +453,4 @@ def run():
 if __name__ == "__main__":
     """直接运行时的提示信息"""
     input("还没想好如何实现主窗口，但你可以键入'Enter'退出程序喵~")
-#endregion
+
